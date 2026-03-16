@@ -2,7 +2,7 @@ import os
 import smtplib
 from datetime import datetime
 from email.mime.text import MIMEText
-from email.utils import COMMASPACE, formataddr  # <<< CHANGED
+from email.utils import COMMASPACE, formataddr
 from typing import Optional, Dict, Any, List, Tuple
 
 import requests
@@ -11,32 +11,31 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from zoneinfo import ZoneInfo
 
-# ---------- Environment Configuration ----------
-load_dotenv()  # harmless in GitHub Actions; required locally
+# ========== Configuration ==========
+load_dotenv()  # loads .env locally; harmless in GitHub Actions
 
-WEATHERAPI_KEY: str = os.getenv("WEATHERAPI_KEY", "")
-EMAIL: str = os.getenv("EMAIL", "")
-EMAIL_PASS: str = os.getenv("EMAIL_PASS", "")
+# Required env vars
+WEATHERAPI_KEY = os.getenv("WEATHERAPI_KEY", "")
+EMAIL = os.getenv("EMAIL", "")
+EMAIL_PASS = os.getenv("EMAIL_PASS", "")
 
-# --- MULTI-RECIPIENT SUPPORT (NEW) ---
-RECIPIENTS_RAW: str = os.getenv("RECIPIENTS", "")     # <<< CHANGED
-CC_RAW: str = os.getenv("CC", "")                      # <<< OPTIONAL
-BCC_RAW: str = os.getenv("BCC", "")                    # <<< OPTIONAL
+# Recipients: comma/semicolon/newline separated list
+RECIPIENTS_RAW = os.getenv("RECIPIENTS", "")
+# Optional: CC/BCC
+CC_RAW = os.getenv("CC", "")
+BCC_RAW = os.getenv("BCC", "")
 
-# Location Configuration
-LAT: float = 28.4595
-LON: float = 77.0266
-LOCATION: str = "Gurugram – Candor TechSpace (Subhash Chowk)"
+# Location / API / SMTP
+LAT, LON = 28.4595, 77.0266
+LOCATION = "Gurugram – Candor TechSpace (Subhash Chowk)"
+WEATHER_API_URL = "https://api.weatherapi.com/v1/forecast.json"  # HTTPS
+SMTP_SERVER, SMTP_PORT = "smtp.gmail.com", 465
+REQUEST_TIMEOUT = 15
+FORECAST_DAYS = 1
 
-# API Configuration
-WEATHER_API_URL: str = "http://api.weatherapi.com/v1/forecast.json"
-SMTP_SERVER: str = "smtp.gmail.com"
-SMTP_PORT: int = 465
-FORECAST_DAYS: int = 1
-REQUEST_TIMEOUT: int = 15
-
-# ---------- HTTP Session Management ----------
+# ========== Small helpers ==========
 def get_retry_session() -> requests.Session:
+    """requests session with simple retry/backoff."""
     session = requests.Session()
     retries = Retry(
         total=3,
@@ -50,238 +49,155 @@ def get_retry_session() -> requests.Session:
     session.mount("https://", adapter)
     return session
 
-# ---------- Air Quality & UV Category Classification ----------
-def get_pm25_category(pm25: Optional[float]) -> str:
-    if pm25 is None:
-        return "Unknown"
-    if pm25 <= 30:
-        return "Good"
-    elif pm25 <= 60:
-        return "Satisfactory"
-    elif pm25 <= 90:
-        return "Moderate"
-    elif pm25 <= 120:
-        return "Poor"
-    elif pm25 <= 250:
-        return "Very Poor"
-    else:
-        return "Severe"
-
-def get_uv_category(uv: Optional[float]) -> Tuple[str, str]:
-    if uv is None:
-        return "Unknown", "no UV data"
-    if uv < 3:
-        return "Low", "Minimal risk"
-    elif uv < 6:
-        return "Moderate", "Use sunglasses; SPF 30+ if outdoors"
-    elif uv < 8:
-        return "High", "SPF 30+, hat, seek shade at midday"
-    elif uv < 11:
-        return "Very High", "Reduce time in sun 10–16h"
-    else:
-        return "Extreme", "Avoid midday sun; SPF 50+"
-
-# ---------- Data Fetching ----------
-def fetch_weather_data() -> Dict[str, Any]:
-    params = {
-        "key": WEATHERAPI_KEY,
-        "q": f"{LAT},{LON}",
-        "days": FORECAST_DAYS,
-        "aqi": "yes",
-        "alerts": "no",
-    }
-    session = get_retry_session()
-    response = session.get(WEATHER_API_URL, params=params, timeout=REQUEST_TIMEOUT)
-    response.raise_for_status()
-    return response.json()
-
-# ---------- Data Extraction & Processing ----------
-def extract_current_weather(payload: Dict[str, Any]) -> Dict[str, Any]:
-    current = payload["current"]
-    return {
-        "condition": current["condition"]["text"],
-        "temp_c": current.get("temp_c"),
-        "temp_f": current.get("temp_f"),
-        "feels_like_c": current.get("feelslike_c"),
-        "humidity": current.get("humidity"),
-        "wind_kph": current.get("wind_kph"),
-        "cloud_cover": current.get("cloud"),
-        "visibility_km": current.get("vis_km"),
-        "precip_mm": current.get("precip_mm", 0),
-        "uv": current.get("uv"),
-    }
-
-def extract_forecast_data(payload: Dict[str, Any]) -> Dict[str, Any]:
-    day_block = payload["forecast"]["forecastday"][0]
-    astro = day_block.get("astro", {})
-    day = day_block.get("day", {})
-    return {
-        "sunrise": astro.get("sunrise"),
-        "sunset": astro.get("sunset"),
-        "chance_of_rain": day.get("daily_chance_of_rain"),
-    }
-
-def extract_air_quality_data(payload: Dict[str, Any]) -> Dict[str, Any]:
-    aq = payload["current"].get("air_quality", {}) or {}
-    return {
-        "pm25": aq.get("pm2_5"),
-        "pm10": aq.get("pm10"),
-        "us_epa_index": aq.get("us-epa-index"),
-        "co": aq.get("co"),
-        "no2": aq.get("no2"),
-        "so2": aq.get("so2"),
-        "o3": aq.get("o3"),
-    }
-
-def generate_concern_list(
-    pm25: Optional[float],
-    uv: Optional[float],
-    visibility: Optional[float],
-) -> List[str]:
-    concerns: List[str] = []
-    if pm25 is not None:
-        if pm25 > 250:
-            concerns.append("• PM2.5 is in **Severe** range — avoid outdoor exertion; use N95 mask if stepping out.")
-        elif pm25 > 120:
-            concerns.append("• PM2.5 is **Very Poor** — limit outdoor time; consider a mask.")
-        elif pm25 > 90:
-            concerns.append("• PM2.5 is **Moderate/Poor** — sensitive groups may feel symptoms.")
-    if uv is not None and uv >= 6:
-        concerns.append("• UV is **High or above** around midday — SPF 30+, hat, seek shade.")
-    if visibility is not None and visibility <= 2:
-        concerns.append("• **Low visibility** — take extra care when commuting this morning.")
-    if not concerns:
-        concerns.append("• No major flags this morning. Stay hydrated and have a great day!")
-    return concerns
-
-# ---------- Email Formatting ----------
-def format_weather_email(payload: Dict[str, Any]) -> str:
-    tz = payload["location"].get("tz_id") or "Asia/Kolkata"
-    now_local = datetime.now(ZoneInfo(tz))
-    date_str = now_local.strftime("%d %B %Y, %I:%M %p")
-
-    weather = extract_current_weather(payload)
-    forecast = extract_forecast_data(payload)
-    aqi = extract_air_quality_data(payload)
-
-    pm25_category = get_pm25_category(aqi["pm25"])
-    uv_category, uv_note = get_uv_category(weather["uv"])
-    concerns = generate_concern_list(aqi["pm25"], weather["uv"], weather["visibility_km"])
-
-    lines: List[str] = []
-    lines.append(f"As of {date_str} in {LOCATION}:")
-    lines.append("")
-    temp_parts = []
-    if weather["temp_c"] is not None:
-        temp_parts.append(f"{weather['temp_c']}°C")
-    if weather["temp_f"] is not None:
-        temp_parts.append(f"{weather['temp_f']}°F")
-    feels_bit = f" (feels {weather['feels_like_c']}°C)" if weather["feels_like_c"] is not None else ""
-    temp_line = " / ".join(temp_parts) + feels_bit if temp_parts else "N/A"
-    aqi_line = f"{round(aqi['pm25'], 1)} μg/m³ – {pm25_category}" if aqi["pm25"] is not None else "No data"
-    sunrise_line = forecast["sunrise"] or "N/A"
-    sunset_line = forecast["sunset"] or "N/A"
-    lines.append(f"• 🌡️ Temperature: {temp_line}")
-    lines.append(f"• 🌫️ AQI (PM2.5): {aqi_line}")
-    lines.append(f"• 🌅 Sunrise: {sunrise_line}   • 🌇 Sunset: {sunset_line}")
-    lines.append("")
-    lines.append("🌤️ Weather")
-    lines.append(f"Condition: {weather['condition']}")
-    if weather["humidity"] is not None:
-        lines.append(f"Humidity: {weather['humidity']}%")
-    if weather["wind_kph"] is not None:
-        lines.append(f"Wind: {weather['wind_kph']} km/h")
-    if weather["cloud_cover"] is not None:
-        lines.append(f"Cloud Cover: {weather['cloud_cover']}%")
-    if forecast["chance_of_rain"] is not None:
-        lines.append(f"Chance of Rain (today): {forecast['chance_of_rain']}%")
-    if weather["precip_mm"] is not None:
-        lines.append(f"Precipitation (current): {weather['precip_mm']} mm")
-    if weather["visibility_km"] is not None:
-        lines.append(f"Visibility: {weather['visibility_km']} km")
-    lines.append("")
-    lines.append("🌫️ Air Quality")
-    if aqi["pm25"] is not None:
-        lines.append(f"PM2.5: {round(aqi['pm25'], 1)} μg/m³ – {pm25_category}")
-    if aqi["pm10"] is not None:
-        lines.append(f"PM10: {round(aqi['pm10'], 1)} μg/m³")
-    if aqi["us_epa_index"] is not None:
-        lines.append(f"US‑EPA Index: {aqi['us_epa_index']} (1=Good … 6=Hazardous)")
-    for pollutant in ["co", "no2", "so2", "o3"]:
-        if aqi[pollutant] is not None:
-            lines.append(f"{pollutant.upper()}: {round(aqi[pollutant], 1)}")
-    lines.append("")
-    lines.append("🌞 UV Index")
-    lines.append(f"UV: {weather['uv']} – {uv_category} ({uv_note})")
-    lines.append("")
-    lines.append("⚠️ Concerning Parameters")
-    lines.extend(concerns)
-    return "\n".join(lines)
-
-# ---------- Helpers (NEW) ----------
 def parse_recipients(csv_like: str) -> List[str]:
-    """
-    Parse comma/semicolon/newline-separated emails into a clean list.
-    """
+    """Split by comma/semicolon/newline, trim spaces, drop empties."""
     tmp = csv_like.replace(";", ",").replace("\n", ",")
-    emails = [part.strip() for part in tmp.split(",") if part.strip()]
-    return emails
+    return [p.strip() for p in tmp.split(",") if p.strip()]
 
-# ---------- Email Sending ----------
-def send_email(subject: str, body: str, to_emails: List[str], cc_emails: List[str] | None = None, bcc_emails: List[str] | None = None) -> None:  # <<< CHANGED
-    """
-    Send an email via Gmail SMTP to one or more recipients (supports CC/BCC).
-    """
-    cc_emails = cc_emails or []
-    bcc_emails = bcc_emails or []
-    all_recipients = list(dict.fromkeys(to_emails + cc_emails + bcc_emails))  # de-duplicate
-
-    msg = MIMEText(body, "plain", "utf-8")
-    msg["Subject"] = subject
-    # Friendly display name + actual mailbox
-    msg["From"] = formataddr(("Weather Bot", EMAIL))  # <<< CHANGED
-    msg["To"] = COMMASPACE.join(to_emails)
-    if cc_emails:
-        msg["Cc"] = COMMASPACE.join(cc_emails)
-
-    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=REQUEST_TIMEOUT) as server:
-        server.login(EMAIL, EMAIL_PASS)
-        server.sendmail(EMAIL, all_recipients, msg.as_string())
-
-def validate_environment() -> None:
-    required_vars = {
-        "WEATHERAPI_KEY": WEATHERAPI_KEY,
-        "EMAIL": EMAIL,
-        "EMAIL_PASS": EMAIL_PASS,
-        "RECIPIENTS": RECIPIENTS_RAW,  # <<< CHANGED
-    }
-    missing = [name for name, value in required_vars.items() if not value]
+def require_env() -> None:
+    missing = []
+    if not WEATHERAPI_KEY: missing.append("WEATHERAPI_KEY")
+    if not EMAIL: missing.append("EMAIL")
+    if not EMAIL_PASS: missing.append("EMAIL_PASS")
+    # allow RECIPIENTS to be set; if not, fail
+    if not (RECIPIENTS_RAW or os.getenv("RECIPIENT")):
+        missing.append("RECIPIENTS (or RECIPIENT)")
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
-# ---------- Main Execution ----------
-def main() -> None:
-    validate_environment()
+# ========== AQI / UV helpers ==========
+def pm25_category(pm25: Optional[float]) -> str:
+    if pm25 is None:
+        return "Unknown"
+    if pm25 <= 30: return "Good"
+    if pm25 <= 60: return "Satisfactory"
+    if pm25 <= 90: return "Moderate"
+    if pm25 <= 120: return "Poor"
+    if pm25 <= 250: return "Very Poor"
+    return "Severe"
 
-    print("Parsing recipients...")
-    to = parse_recipients(RECIPIENTS_RAW)
+def uv_category(uv: Optional[float]) -> Tuple[str, str]:
+    if uv is None:
+        return "Unknown", "no UV data"
+    if uv < 3:  return "Low", "Minimal risk"
+    if uv < 6:  return "Moderate", "Use sunglasses; SPF 30+ if outdoors"
+    if uv < 8:  return "High", "SPF 30+, hat, seek shade at midday"
+    if uv < 11: return "Very High", "Reduce time in sun 10–16h"
+    return "Extreme", "Avoid midday sun; SPF 50+"
+
+# ========== Fetch & format ==========
+def fetch_weather() -> Dict[str, Any]:
+    session = get_retry_session()
+    params = {"key": WEATHERAPI_KEY, "q": f"{LAT},{LON}", "days": FORECAST_DAYS, "aqi": "yes", "alerts": "no"}
+    resp = session.get(WEATHER_API_URL, params=params, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    return resp.json()
+
+def build_email(payload: Dict[str, Any]) -> str:
+    tz = payload["location"].get("tz_id") or "Asia/Kolkata"
+    now_local = datetime.now(ZoneInfo(tz)).strftime("%d %B %Y, %I:%M %p")
+    cur = payload["current"]
+    day = payload["forecast"]["forecastday"][0]
+    astro, fday = day.get("astro", {}), day.get("day", {})
+    aq = cur.get("air_quality", {}) or {}
+
+    # Summary bits
+    temp_c, temp_f = cur.get("temp_c"), cur.get("temp_f")
+    feels = cur.get("feelslike_c")
+    temp_line = (
+        " / ".join([f"{temp_c}°C" if temp_c is not None else None,
+                    f"{temp_f}°F" if temp_f is not None else None])
+    )
+    temp_line = " / ".join([p for p in (temp_line.split(" / ") if temp_line else []) if p]) or "N/A"
+    if feels is not None:
+        temp_line += f" (feels {feels}°C)"
+
+    pm25 = aq.get("pm2_5")
+    aqi_line = f"{round(pm25, 1)} μg/m³ – {pm25_category(pm25)}" if pm25 is not None else "No data"
+
+    # Build body
+    lines: List[str] = []
+    lines.append(f"As of {now_local} in {LOCATION}:")
+    lines.append("")
+    lines.append(f"• 🌡️ Temperature: {temp_line}")
+    lines.append(f"• 🌫️ AQI (PM2.5): {aqi_line}")
+    lines.append(f"• 🌅 Sunrise: {astro.get('sunrise') or 'N/A'}   • 🌇 Sunset: {astro.get('sunset') or 'N/A'}")
+    lines.append("")
+    lines.append("🌤️ Weather")
+    lines.append(f"Condition: {cur['condition']['text']}")
+    if cur.get("humidity") is not None:   lines.append(f"Humidity: {cur['humidity']}%")
+    if cur.get("wind_kph") is not None:   lines.append(f"Wind: {cur['wind_kph']} km/h")
+    if cur.get("cloud") is not None:      lines.append(f"Cloud Cover: {cur['cloud']}%")
+    if fday.get("daily_chance_of_rain") is not None: lines.append(f"Chance of Rain (today): {fday['daily_chance_of_rain']}%")
+    if cur.get("precip_mm") is not None:  lines.append(f"Precipitation (current): {cur['precip_mm']} mm")
+    if cur.get("vis_km") is not None:     lines.append(f"Visibility: {cur['vis_km']} km")
+    lines.append("")
+    lines.append("🌫️ Air Quality")
+    if pm25 is not None: lines.append(f"PM2.5: {round(pm25, 1)} μg/m³ – {pm25_category(pm25)}")
+    if aq.get("pm10") is not None: lines.append(f"PM10: {round(aq['pm10'], 1)} μg/m³")
+    if aq.get("us-epa-index") is not None: lines.append(f"US‑EPA Index: {aq['us-epa-index']} (1=Good … 6=Hazardous)")
+    for key in ("co", "no2", "so2", "o3"):
+        if aq.get(key) is not None:
+            lines.append(f"{key.upper()}: {round(aq[key], 1)}")
+    lines.append("")
+    uv = cur.get("uv")
+    uvc, uv_note = uv_category(uv)
+    lines.append("🌞 UV Index")
+    lines.append(f"UV: {uv} – {uvc} ({uv_note})")
+    lines.append("")
+    # Compact concern section
+    concerns: List[str] = []
+    if pm25 is not None:
+        if pm25 > 250: concerns.append("• PM2.5 **Severe** — avoid outdoor exertion; use N95.")
+        elif pm25 > 120: concerns.append("• PM2.5 **Very Poor** — limit outdoor time; consider mask.")
+        elif pm25 > 90: concerns.append("• PM2.5 **Moderate/Poor** — sensitive groups may feel symptoms.")
+    if uv is not None and uv >= 6: concerns.append("• UV **High+** midday — SPF 30+, hat, shade.")
+    if cur.get("vis_km") is not None and cur["vis_km"] <= 2: concerns.append("• **Low visibility** — commute with care.")
+    if not concerns: concerns.append("• No major flags. Stay hydrated and have a great day!")
+    lines.append("⚠️ Concerning Parameters")
+    lines.extend(concerns)
+
+    return "\n".join(lines)
+
+# ========== Email ==========
+def send_email(subject: str, body: str, to: List[str], cc: Optional[List[str]] = None, bcc: Optional[List[str]] = None) -> None:
+    cc = cc or []
+    bcc = bcc or []
+    all_rcpts = list(dict.fromkeys(to + cc + bcc))  # de-duplicate while preserving order
+
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = formataddr(("Weather Bot", EMAIL))
+    msg["To"] = COMMASPACE.join(to)
+    if cc: msg["Cc"] = COMMASPACE.join(cc)
+
+    with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=REQUEST_TIMEOUT) as server:
+        server.login(EMAIL, EMAIL_PASS)
+        server.sendmail(EMAIL, all_rcpts, msg.as_string())
+
+# ========== Main ==========
+def main() -> None:
+    require_env()
+
+    # Recipients: prefer RECIPIENTS; fall back to legacy RECIPIENT if defined
+    raw = RECIPIENTS_RAW or os.getenv("RECIPIENT", "")
+    to = parse_recipients(raw)
     cc = parse_recipients(CC_RAW) if CC_RAW else []
     bcc = parse_recipients(BCC_RAW) if BCC_RAW else []
     if not to:
-        raise RuntimeError("No valid email addresses found in RECIPIENTS.")
+        raise RuntimeError("No valid email addresses found in RECIPIENTS/RECIPIENT.")
 
-    print("Fetching weather data...")
-    data = fetch_weather_data()
+    print(f"Recipients: to={len(to)}, cc={len(cc)}, bcc={len(bcc)}")
 
-    print("Formatting email...")
-    email_body = format_weather_email(data)
+    data = fetch_weather()
+    email_body = build_email(data)
 
     tz = data["location"].get("tz_id") or "Asia/Kolkata"
     now_local = datetime.now(ZoneInfo(tz))
-    subject = f"Weather & AQI Update • {LOCATION} • {now_local.strftime('%d %b %Y')}"  # <<< also unescaped '&'
+    subject = f"Weather & AQI Update • {LOCATION} • {now_local.strftime('%d %b %Y')}"
 
-    print(f"Sending email to {len(to)} recipient(s), CC={len(cc)}, BCC={len(bcc)} ...")
-    send_email(subject, email_body, to, cc, bcc)  # <<< CHANGED
+    print("Sending email...")
+    send_email(subject, email_body, to, cc, bcc)
     print("✅ Email sent successfully!")
 
 if __name__ == "__main__":
