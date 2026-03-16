@@ -30,7 +30,7 @@ jobs:
         env:
           EMAIL: ${{ secrets.EMAIL }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          RECIPIENT: ${{ secrets.RECIPIENT }}
+          RECIPIENT: ${{ secrets.RECIPIENTS }}
           WEATHERAPI_KEY: ${{ secrets.WEATHERAPI_KEY }}
         run: |
           python main.py
