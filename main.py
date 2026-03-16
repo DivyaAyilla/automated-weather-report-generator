@@ -80,33 +80,32 @@ def get_all_data():
     return resp.json()
 
 # ---------- Format ----------
-def format_weather_email(payload):
-    tz = payload["location"]["tz_id"] or "Asia/Kolkata"
+def format_weather_email(payload):def format_weather_email(payload):
+    tz = payload["location"].get("tz_id") or "Asia/Kolkata"
     now_local = datetime.now(ZoneInfo(tz))
     date_str = now_local.strftime("%d %B %Y, %I:%M %p")
 
     current = payload["current"]
-    astro = payload["forecast"]["forecastday"][0]["astro"]
-    day = payload["forecast"]["forecastday"][0]["day"]
+    day_block = payload["forecast"]["forecastday"][0]
+    astro = day_block.get("astro", {})
+    day = day_block.get("day", {})
 
     # Weather
-    weather = {
-        "condition": current["condition"]["text"],
-        "temp_c": current["temp_c"],
-        "temp_f": current["temp_f"],
-        "feels_like_c": current["feelslike_c"],
-        "humidity": current["humidity"],
-        "wind_kmh": current["wind_kph"],
-        "cloud_cover": current["cloud"],
-        "visibility": current.get("vis_km"),
-        "precip_mm": current.get("precip_mm", 0),
-        "sunrise": astro.get("sunrise"),
-        "sunset": astro.get("sunset"),
-        "chance_of_rain": day.get("daily_chance_of_rain"),  # %
-    }
+    condition = current["condition"]["text"]
+    temp_c = current.get("temp_c")
+    temp_f = current.get("temp_f")
+    feels_like_c = current.get("feelslike_c")
+    humidity = current.get("humidity")
+    wind_kmh = current.get("wind_kph")
+    cloud_cover = current.get("cloud")
+    visibility = current.get("vis_km")
+    precip_mm = current.get("precip_mm", 0)
+    sunrise = astro.get("sunrise")
+    sunset = astro.get("sunset")
+    chance_of_rain = day.get("daily_chance_of_rain")  # %
 
     # AQI / Air quality
-    aq = current.get("air_quality", {})
+    aq = current.get("air_quality", {}) or {}
     pm25 = aq.get("pm2_5")
     pm10 = aq.get("pm10")
     us_epa_idx = aq.get("us-epa-index")  # 1..6
@@ -127,50 +126,76 @@ def format_weather_email(payload):
             concerning.append("• PM2.5 is **Moderate/Poor** — sensitive groups may feel symptoms.")
     if uv_val is not None and uv_val >= 6:
         concerning.append("• UV is **High or above** around midday — SPF 30+, hat, seek shade.")
-    if weather["visibility"] is not None and weather["visibility"] <= 2:
+    if visibility is not None and visibility <= 2:
         concerning.append("• **Low visibility** — take extra care when commuting this morning.")
     if not concerning:
         concerning.append("• No major flags this morning. Stay hydrated and have a great day!")
 
-    # Build plain‑text email
+    # ---------- Build plain‑text email ----------
     lines = []
-    lines.append(f"As of {date_str} in {LOCATION}, here are your updates:\n")
+
+    # Header line with timestamp & location
+    lines.append(f"As of {date_str} in {LOCATION}:")
+
+    # Quick summary (FIRST FEW LINES)
+    # Temperature
+    temp_bits = []
+    if temp_c is not None:
+        temp_bits.append(f"{temp_c}°C")
+    if temp_f is not None:
+        temp_bits.append(f"{temp_f}°F")
+    feels_bit = f" (feels {feels_like_c}°C)" if feels_like_c is not None else ""
+    temp_line = " / ".join(temp_bits) + feels_bit if temp_bits else "N/A"
+
+    # AQI (PM2.5)
+    aqi_line = f"{round(pm25,1)} μg/m³ – {aqi_cat}" if pm25 is not None else "No data"
+
+    # Sunrise/Sunset
+    sunrise_line = sunrise or "N/A"
+    sunset_line = sunset or "N/A"
+
+    lines.append(f"• 🌡️ Temperature: {temp_line}")
+    lines.append(f"• 🌫️ AQI (PM2.5): {aqi_line}")
+    lines.append(f"• 🌅 Sunrise: {sunrise_line}   • 🌇 Sunset: {sunset_line}")
+    lines.append("")  # spacer
+
+    # Detail sections
     lines.append("🌤️ Weather")
-    lines.append(f"Condition: {weather['condition']}")
-    lines.append(f"Temperature: {weather['temp_c']}°C (≈ {weather['temp_f']}°F)")
-    lines.append(f"Feels Like: {weather['feels_like_c']}°C")
-    lines.append(f"Humidity: {weather['humidity']}%")
-    lines.append(f"Wind: {weather['wind_kmh']} km/h")
-    lines.append(f"Cloud Cover: {weather['cloud_cover']}%")
-    if weather["chance_of_rain"] is not None:
-        lines.append(f"Chance of Rain (today): {weather['chance_of_rain']}%")
-    lines.append(f"Precipitation (current): {weather['precip_mm']} mm")
-    lines.append(f"Visibility: {weather['visibility']} km")
-    lines.append(f"Sunrise: {weather['sunrise']}")
-    lines.append(f"Sunset: {weather['sunset']} \n")
+    lines.append(f"Condition: {condition}")
+    if humidity is not None:
+        lines.append(f"Humidity: {humidity}%")
+    if wind_kmh is not None:
+        lines.append(f"Wind: {wind_kmh} km/h")
+    if cloud_cover is not None:
+        lines.append(f"Cloud Cover: {cloud_cover}%")
+    if chance_of_rain is not None:
+        lines.append(f"Chance of Rain (today): {chance_of_rain}%")
+    if precip_mm is not None:
+        lines.append(f"Precipitation (current): {precip_mm} mm")
+    if visibility is not None:
+        lines.append(f"Visibility: {visibility} km")
+    lines.append("")  # spacer
 
     lines.append("🌫️ Air Quality")
     if pm25 is not None:
         lines.append(f"PM2.5: {round(pm25, 1)} μg/m³ – {aqi_cat}")
     if pm10 is not None:
         lines.append(f"PM10: {round(pm10, 1)} μg/m³")
-    # Show US‑EPA index if present (optional)
     if us_epa_idx is not None:
         lines.append(f"US‑EPA Index: {us_epa_idx} (1=Good … 6=Hazardous)")
-    # Show gases as-is without units to avoid mislabeling
     for key in ("co", "no2", "so2", "o3"):
         if key in aq and aq[key] is not None:
             lines.append(f"{key.upper()}: {round(aq[key], 1)}")
-    lines.append("")
+    lines.append("")  # spacer
 
     lines.append("🌞 UV Index")
-    lines.append(f"UV: {uv_val} – {uv_cat} ({uv_note}) \n")
+    lines.append(f"UV: {uv_val} – {uv_cat} ({uv_note})")
+    lines.append("")  # spacer
 
     lines.append("⚠️ Concerning Parameters")
     lines.extend(concerning)
 
     return "\n".join(lines)
-
 # ---------- Email ----------
 def send_email(subject, body, to_email):
     msg = MIMEText(body, "plain", "utf-8")
