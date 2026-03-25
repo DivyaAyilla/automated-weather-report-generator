@@ -26,8 +26,8 @@ CC_RAW = os.getenv("CC", "")
 BCC_RAW = os.getenv("BCC", "")
 
 # Location / API / SMTP
-LAT, LON = 28.4595, 77.0266
-LOCATION = "Gurugram – Candor TechSpace (Subhash Chowk)"
+LAT, LON = 17.3967663, 78.3347724
+LOCATION = "Hyderabad – Kokapet"
 WEATHER_API_URL = "https://api.weatherapi.com/v1/forecast.json"  # HTTPS
 SMTP_SERVER, SMTP_PORT = "smtp.gmail.com", 465
 REQUEST_TIMEOUT = 15
