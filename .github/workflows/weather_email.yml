@@ -31,6 +31,6 @@ jobs:
           EMAIL: ${{ secrets.EMAIL }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           RECIPIENT: ${{ secrets.RECIPIENTS }}
-          WEATHERAPI_KEY: ${{ secrets.WEATHERAPI_KEY }}
+          WEATHER_API_KEY: ${{ secrets.WEATHER_API_KEY }}
         run: |
           python main.py
